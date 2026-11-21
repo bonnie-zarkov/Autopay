@@ -108,6 +108,11 @@ DATABASES = {
     }
 }
 
+SESSION_ENGINE = os.getenv(
+    'DJANGO_SESSION_ENGINE',
+    'django.contrib.sessions.backends.signed_cookies',
+)
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators

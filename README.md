@@ -42,7 +42,10 @@ are included automatically when present. For other hosts, set `ALLOWED_HOSTS`
 in the deployment environment; do not use `*` in production. Django debug mode
 defaults to off; keep `DJANGO_DEBUG=False` in production to avoid exposing
 tracebacks and request details. WhiteNoise serves the bundled dashboard styles
-at the absolute `/static/` path, including on serverless deployments.
+at the absolute `/static/` path, including on serverless deployments. Sessions
+use Django's signed-cookie backend by default so login does not depend on a
+server-side session table; old database-backed session cookies require signing
+in again after deployment.
 
 ## PayHero and reminders
 

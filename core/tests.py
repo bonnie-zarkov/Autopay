@@ -51,6 +51,20 @@ class StaticAssetTests(SimpleTestCase):
         self.assertTrue(stylesheet['Content-Type'].startswith('text/css'))
 
 
+class ServerlessSessionTests(SimpleTestCase):
+    @override_settings(
+        DEBUG=False,
+        ALLOWED_HOSTS=['testserver'],
+        SESSION_ENGINE='django.contrib.sessions.backends.signed_cookies',
+    )
+    def test_login_accepts_old_session_cookie_without_database_lookup(self):
+        response = Client().get(
+            '/login/?next=/',
+            HTTP_COOKIE='sessionid=legacy-database-session',
+        )
+        self.assertEqual(response.status_code, 200)
+
+
 class AutoPayFlowTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='demo', password='safe-password-123')
