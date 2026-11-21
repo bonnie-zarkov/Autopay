@@ -1,0 +1,29 @@
+{% extends "core/base.html" %}
+{% block content %}
+<div class="auth-layout">
+  <section class="auth-showcase">
+    <a class="brand light" href="#"><span class="brand-mark">A</span><span>AutoPay</span></a>
+    <div>
+      <span class="eyebrow">Payment, on your terms</span>
+      <h1>Remember. Verify.<br>Pay safely.</h1>
+      <p>Your bills stay organized while Payment Shield makes sure every payment is authorized.</p>
+    </div>
+  </section>
+  <section class="auth-panel">
+    <div class="auth-card">
+      <h2>{% if mode == 'signup' %}Create your account{% else %}Welcome back{% endif %}</h2>
+      <p>{% if mode == 'signup' %}Start managing bills safely.{% else %}Sign in to your AutoPay dashboard.{% endif %}</p>
+      <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button class="button primary wide" type="submit">{% if mode == 'signup' %}Create account{% else %}Sign in{% endif %}</button>
+      </form>
+      {% if mode == 'signup' %}
+        <p class="auth-switch">Already have an account? <a href="{% url 'login' %}">Sign in</a></p>
+      {% else %}
+        <p class="auth-switch">New to AutoPay? <a href="{% url 'signup' %}">Create account</a></p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}

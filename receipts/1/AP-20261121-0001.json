@@ -1,0 +1,9 @@
+{
+  "number": "AP-20261121-0001",
+  "payer": "demo",
+  "merchant": "John Kamau",
+  "amount": "15000.00",
+  "date": "2026-11-21T09:17:33.515702+00:00",
+  "providerReference": "MOCK-AP-20261121-2D6736",
+  "riskLevel": "GREEN"
+}

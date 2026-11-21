@@ -1,0 +1,15 @@
+[
+  {
+    "category": "INTERNET",
+    "providers": [
+      {"name": "Safaricom Home Fibre", "plan": "10 Mbps", "monthlyPrice": 2900},
+      {"name": "Zuku", "plan": "10 Mbps", "monthlyPrice": 2200}
+    ]
+  },
+  {
+    "category": "INSURANCE",
+    "providers": [
+      {"name": "Kenyan provider", "plan": "Basic cover", "monthlyPrice": 1000}
+    ]
+  }
+]

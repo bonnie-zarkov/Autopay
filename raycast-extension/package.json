@@ -1,0 +1,19 @@
+{
+  "name": "autopay",
+  "title": "AutoPay",
+  "description": "Manage bills and payments from Raycast",
+  "icon": "icon.png",
+  "author": "AutoPay",
+  "license": "MIT",
+  "preferences": [
+    {"name":"apiBaseUrl","title":"API Base URL","type":"textfield","required":true,"default":"http://127.0.0.1:8000"},
+    {"name":"token","title":"Bearer Token","type":"password","required":false}
+  ],
+  "commands": [
+    {"name":"status","title":"AutoPay Status","mode":"view"},
+    {"name":"freeze","title":"AutoPay Freeze","mode":"no-view"},
+    {"name":"bills","title":"AutoPay Bills","mode":"view"},
+    {"name":"confirm","title":"AutoPay Confirm","mode":"view"},
+    {"name":"pay","title":"AutoPay Pay","mode":"view"}
+  ]
+}

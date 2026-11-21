@@ -1,0 +1,20 @@
+{% extends "core/base.html" %}
+{% block content %}
+<div class="page-header">
+  <div><span class="eyebrow">Notifications</span><h1>Bill reminders</h1></div>
+  <a class="button ghost" href="{% url 'dashboard' %}">← Dashboard</a>
+</div>
+<section class="activity-table">
+  <div class="table-head reminder-head"><span>Reminder</span><span>Bill</span><span>Schedule</span><span>Status</span></div>
+  {% for reminder in reminders %}
+  <div class="table-row reminder-row">
+    <div><strong>{{ reminder.title }}</strong><small>{{ reminder.message }}</small></div>
+    <div><strong>{{ reminder.bill.name }}</strong></div>
+    <div><strong>{{ reminder.due_at|date:"D, d M Y · H:i" }}</strong></div>
+    <div><span class="status">{{ reminder.status }}</span></div>
+  </div>
+  {% empty %}
+  <div class="empty compact"><p>No reminders scheduled. Add a bill to generate its due-date reminders.</p></div>
+  {% endfor %}
+</section>
+{% endblock %}
