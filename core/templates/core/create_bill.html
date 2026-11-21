@@ -14,12 +14,13 @@
     </select></label>
     <label>Merchant name<input name="merchant_name" placeholder="John Kamau" required></label>
     <label>Merchant phone<input name="merchant_phone" placeholder="254712345678" required></label>
-    <label>Amount (KES)<input name="amount" type="number" min="1" step="0.01" placeholder="15000" required></label>
+    <label>Amount (KES)<input name="amount" type="number" min="1" step="1" placeholder="15000" required></label>
     <label>Due date<input name="due_date" type="date" required></label>
     <label>Payment reference<input name="reference" placeholder="RENT-DEC-2026" required></label>
     <label>Frequency<select name="frequency"><option>monthly</option><option>weekly</option><option>once</option></select></label>
   </div>
   <label>Account number (optional)<input name="account_number" placeholder="Account or customer number"></label>
+  <label class="checkbox-label"><input type="checkbox" name="auto_pay_enabled"> Allow automatic remittance when due (requires sufficient wallet funds)</label>
   <div class="form-actions"><button class="button primary" type="submit">Create bill</button></div>
 </form>
 {% endblock %}

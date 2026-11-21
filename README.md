@@ -10,6 +10,13 @@ python3 manage.py migrate
 python3 manage.py runserver 127.0.0.1:8000
 ```
 
+Run the one-minute reminder/remittance scheduler in a second terminal:
+
+```bash
+source venv/bin/activate
+python manage.py run_autopay_scheduler
+```
+
 Open `http://127.0.0.1:8000/signup/` and create an account.
 
 Demo login:
@@ -51,3 +58,17 @@ Generate and deliver in-app reminders with:
 ```bash
 python3 manage.py send_reminders
 ```
+
+## Wallet and scheduled remittances
+
+Open `/wallet/` to request an STK deposit, inspect ledger balances, and complete mock
+deposits. In mock mode the "complete mock" control credits demo funds only; it is not
+a real M-Pesa transfer. Live STK requires a public HTTPS `PAYHERO_CALLBACK_URL`.
+Never mark a live deposit successful from the demo UI.
+
+Add a bill, then choose **Schedule remittance** on its dashboard card and set its
+date/time. Turn on the bill's explicit auto-remittance consent to allow a green,
+funded bill to execute automatically in mock mode; otherwise the scheduler requests
+confirmation at the scheduled time. Current scheduled remittances debit the internal
+demo ledger only. Real bill payouts are disabled until PayHero's official payout
+contract and production verification are implemented.

@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
@@ -7,10 +7,14 @@ from django.test import TestCase
 from django.urls import reverse
 from django.test import override_settings
 from unittest.mock import patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from django.utils import timezone
 
 from .payhero import PayHeroClient
 
-from .models import Bill, LedgerEntry, PaymentAttempt, PaymentIntent, Reminder, TrustedPayee
+from .models import Bill, Deposit, LedgerEntry, PaymentAttempt, PaymentIntent, Reminder, TrustedPayee
+from .tasks import process_due_scheduled_remittances
 
 
 class AutoPayFlowTests(TestCase):
@@ -167,20 +171,131 @@ class ExpandedFeatureTests(TestCase):
         self.user = User.objects.create_user(username='feature', password='feature-password')
         self.client.login(username='feature', password='feature-password')
 
-    def test_mock_wallet_deposit_requires_valid_phone(self):
+    @override_settings(PAYHERO_LIVE_PAYMENTS=False)
+    def test_wallet_deposit_fails_when_live_payhero_is_disabled(self):
+        response = self.client.post(
+            reverse('deposit_api'),
+            json.dumps({'amount': 1000, 'phone': '0712345678'}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['error']['code'], 'PAYHERO_NOT_READY')
+        self.assertFalse(Deposit.objects.exists())
+
+    @override_settings(PAYHERO_LIVE_PAYMENTS=False)
+    def test_wallet_page_hides_top_up_form_until_payhero_is_ready(self):
+        response = self.client.get(reverse('wallet'))
+        self.assertContains(response, 'Real wallet top-ups are unavailable')
+        self.assertNotContains(response, 'Pay with M-Pesa STK')
+        self.assertNotContains(response, 'Complete mock')
+
+    @override_settings(
+        PAYHERO_LIVE_PAYMENTS=True,
+        PAYHERO_CALLBACK_URL='https://autopay.example.com/api/webhooks/payhero/',
+        PAYHERO_CHANNEL_ID='123',
+        PAYHERO_BASIC_AUTH_TOKEN='test-token',
+        PAYHERO_CALLBACK_SECRET='',
+    )
+    def test_wallet_deposit_requires_callback_authentication(self):
+        response = self.client.post(
+            reverse('deposit_api'),
+            json.dumps({'amount': 1000, 'phone': '0712345678'}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(Deposit.objects.exists())
+
+    @override_settings(
+        PAYHERO_LIVE_PAYMENTS=True,
+        PAYHERO_CALLBACK_URL='https://autopay.example.com/api/webhooks/payhero/',
+        PAYHERO_CHANNEL_ID='123',
+        PAYHERO_BASIC_AUTH_TOKEN='test-token',
+        PAYHERO_CALLBACK_SECRET='test-callback-secret',
+    )
+    @patch('core.views.PayHeroClient.collect')
+    def test_wallet_deposit_starts_payhero_stk(self, collect):
+        collect.return_value = {
+            'providerReference': 'PH-DEP-1',
+            'checkoutRequestId': 'CHECKOUT-1',
+        }
         response = self.client.post(
             reverse('deposit_api'),
             json.dumps({'amount': 1000, 'phone': '0712345678'}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 201)
-        deposit_id = response.json()['depositId']
-        complete = self.client.post(
-            reverse('deposit_complete_api', args=[deposit_id]),
-            {'receipt': 'TEST-RECEIPT'},
+        deposit = Deposit.objects.get()
+        self.assertEqual(deposit.provider, 'payhero')
+        self.assertEqual(deposit.status, 'QUEUED')
+        self.assertEqual(deposit.payhero_reference, 'PH-DEP-1')
+        collect.assert_called_once()
+
+    @override_settings(
+        PAYHERO_LIVE_PAYMENTS=True,
+        PAYHERO_CALLBACK_SECRET='test-callback-secret',
+    )
+    @patch('core.views.PayHeroClient.status', return_value={'status': 'SUCCESS'})
+    def test_verified_payhero_callback_credits_wallet_once(self, status):
+        deposit = Deposit.objects.create(
+            user=self.user, amount=1000, phone='254712345678',
+            external_reference='dep_verified_test', payhero_reference='PH-DEP-2',
+            provider='payhero',
         )
-        self.assertEqual(complete.status_code, 200)
-        self.assertEqual(complete.json()['balance']['available'], 1000)
+        payload = {
+            'ExternalReference': deposit.external_reference,
+            'provider_reference': deposit.payhero_reference,
+            'ResultCode': '0',
+            'Amount': 1000,
+            'MpesaReceiptNumber': 'QWERTY123',
+        }
+        first = self.client.post(
+            reverse('payhero_webhook'), json.dumps(payload),
+            content_type='application/json',
+            HTTP_X_PAYHERO_SECRET='test-callback-secret',
+        )
+        second = self.client.post(
+            reverse('payhero_webhook'), json.dumps(payload),
+            content_type='application/json',
+            HTTP_X_PAYHERO_SECRET='test-callback-secret',
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(second.json()['duplicate'])
+        self.assertEqual(LedgerEntry.objects.filter(ref_type='Deposit', ref_id=str(deposit.id), status='POSTED').count(), 1)
+        status.assert_called_once_with('PH-DEP-2')
+
+    @override_settings(PAYHERO_LIVE_PAYMENTS=False)
+    def test_legacy_mock_completion_cannot_credit_wallet(self):
+        deposit = Deposit.objects.create(
+            user=self.user, amount=1000, phone='254712345678',
+            external_reference='dep_mock_test', provider='mock',
+        )
+        response = self.client.post(reverse('deposit_complete_api', args=[deposit.id]))
+        self.assertEqual(response.status_code, 410)
+        self.assertFalse(LedgerEntry.objects.filter(ref_type='Deposit', ref_id=str(deposit.id)).exists())
+
+    @override_settings(
+        PAYHERO_LIVE_PAYMENTS=True,
+        PAYHERO_CALLBACK_SECRET='test-callback-secret',
+    )
+    @patch('core.views.PayHeroClient.status', return_value={'status': 'SUCCESS'})
+    def test_payhero_callback_with_wrong_amount_does_not_credit_wallet(self, status):
+        deposit = Deposit.objects.create(
+            user=self.user, amount=1000, phone='254712345678',
+            external_reference='dep_amount_test', provider='payhero',
+        )
+        response = self.client.post(
+            reverse('payhero_webhook'),
+            json.dumps({
+                'ExternalReference': deposit.external_reference,
+                'ResultCode': '0',
+                'Amount': 999,
+            }),
+            content_type='application/json',
+            HTTP_X_PAYHERO_SECRET='test-callback-secret',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(LedgerEntry.objects.filter(ref_type='Deposit', ref_id=str(deposit.id)).exists())
+        status.assert_not_called()
 
     def test_chat_freeze_is_safe_and_deterministic(self):
         response = self.client.post(
@@ -207,5 +322,68 @@ class ExpandedFeatureTests(TestCase):
         )
         self.assertEqual(me.status_code, 200)
         self.assertEqual(me.json()['phone'], '')
+
+    def test_user_has_active_wallet_reference(self):
+        wallet = self.user.wallet_account
+        self.assertTrue(wallet.reference.startswith('APW-'))
+        self.assertEqual(wallet.currency, 'KES')
+        self.assertEqual(wallet.status, 'ACTIVE')
+
+
+class ScheduledRemittanceTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='scheduled', password='scheduled-password')
+        self.bill = Bill.objects.create(
+            user=self.user, name='Rent', category='RENT',
+            merchant_name='Landlord', merchant_phone='254712345678',
+            reference='RENT-1', amount=Decimal('6000'),
+            due_date=timezone.localdate(), auto_pay_enabled=True,
+        )
+        LedgerEntry.objects.create(
+            user=self.user, type='DEPOSIT', amount=10000,
+            ref_type='Test', ref_id='FUNDS', status='POSTED',
+        )
+
+    @override_settings(PAYHERO_LIVE_PAYMENTS=False)
+    def test_due_remittance_debits_wallet_once(self):
+        due = timezone.now() - timedelta(minutes=1)
+        intent = PaymentIntent.objects.create(
+            user=self.user, bill=self.bill,
+            intent_id='AP-SCHEDULED-1', amount=Decimal('6000'),
+            recipient='Landlord', phone='254712345678',
+            reference='RENT-1', reason='Scheduled rent',
+            authorization_status='AUTHORIZED',
+            payment_status='SCHEDULED',
+            scheduled_for=due,
+            expires_at=due + timedelta(hours=1),
+        )
+        with TemporaryDirectory() as temp_dir, override_settings(BASE_DIR=Path(temp_dir)):
+            self.assertEqual(process_due_scheduled_remittances(), 1)
+            self.assertEqual(process_due_scheduled_remittances(), 0)
+        intent.refresh_from_db()
+        self.assertEqual(intent.payment_status, 'SUCCESS')
+        self.assertEqual(PaymentAttempt.objects.filter(payment_intent=intent).count(), 1)
+        from core.views import posted_balance
+        self.assertEqual(posted_balance(self.user)['available'], 4000)
+
+    def test_scheduled_remittance_waits_for_confirmation_without_opt_in(self):
+        self.bill.auto_pay_enabled = False
+        self.bill.save(update_fields=['auto_pay_enabled'])
+        due = timezone.now() - timedelta(minutes=1)
+        intent = PaymentIntent.objects.create(
+            user=self.user, bill=self.bill,
+            intent_id='AP-SCHEDULED-2', amount=Decimal('6000'),
+            recipient='Landlord', phone='254712345678',
+            reference='RENT-1', reason='Scheduled rent',
+            authorization_status='CREATED',
+            payment_status='SCHEDULED',
+            scheduled_for=due,
+            expires_at=due + timedelta(hours=1),
+        )
+        self.assertEqual(process_due_scheduled_remittances(), 1)
+        intent.refresh_from_db()
+        self.assertEqual(intent.payment_status, 'AWAITING_CONFIRMATION')
+        from core.views import posted_balance
+        self.assertEqual(posted_balance(self.user)['available'], 10000)
 
 # Create your tests here.

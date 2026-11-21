@@ -9,6 +9,7 @@ import csv
 from pathlib import Path
 from io import StringIO
 from datetime import datetime, date as date_type, time, timedelta
+from urllib.parse import urlparse
 
 import requests
 
@@ -107,6 +108,7 @@ def dashboard(request):
         'today': timezone.localdate(),
         'reminders': Reminder.objects.filter(user=request.user, status='PENDING')[:5],
         'monthly_bills': sum((bill.amount for bill in bills), Decimal('0')),
+        'wallet': posted_balance(request.user),
     })
 
 
@@ -114,6 +116,135 @@ def dashboard(request):
 def reminders(request):
     items = Reminder.objects.filter(user=request.user).select_related('bill')
     return render(request, 'core/reminders.html', {'reminders': items})
+
+
+@login_required
+def wallet_page(request):
+    funding_error = wallet_funding_configuration_error()
+    return render(request, 'core/wallet.html', {
+        'wallet': posted_balance(request.user),
+        'wallet_account': request.user.wallet_account,
+        'deposits': Deposit.objects.filter(user=request.user).order_by('-created_at')[:15],
+        'transactions': LedgerEntry.objects.filter(user=request.user).order_by('-created_at')[:20],
+        'funding_ready': funding_error is None,
+        'funding_error': funding_error,
+    })
+
+
+def wallet_funding_configuration_error():
+    if not settings.PAYHERO_LIVE_PAYMENTS:
+        return 'Live PayHero deposits are disabled.'
+    callback = urlparse(settings.PAYHERO_CALLBACK_URL)
+    if callback.scheme != 'https' or not callback.netloc:
+        return 'Configure a public HTTPS PayHero callback URL.'
+    try:
+        if int(settings.PAYHERO_CHANNEL_ID) <= 0:
+            return 'Configure a valid PayHero channel ID.'
+    except (TypeError, ValueError):
+        return 'Configure a valid PayHero channel ID.'
+    if not settings.PAYHERO_BASIC_AUTH_TOKEN and not (
+        settings.PAYHERO_USERNAME and settings.PAYHERO_PASSWORD
+    ):
+        return 'Configure PayHero API credentials.'
+    if not settings.PAYHERO_CALLBACK_SECRET:
+        return 'Configure a PayHero callback secret before accepting wallet deposits.'
+    return None
+
+
+@login_required
+@require_POST
+@transaction.atomic
+def wallet_deposit_page(request):
+    configuration_error = wallet_funding_configuration_error()
+    if configuration_error:
+        messages.error(request, f'Wallet top-up unavailable: {configuration_error}')
+        return redirect('wallet')
+    try:
+        amount = int(request.POST.get('amount') or 0)
+    except ValueError:
+        messages.error(request, 'Enter a whole KES amount.')
+        return redirect('wallet')
+    phone = (request.POST.get('phone') or request.user.profile.phone).strip()
+    normalized = phone.replace(' ', '').replace('-', '')
+    if normalized.startswith('0'):
+        normalized = '254' + normalized[1:]
+    elif normalized.startswith('+'):
+        normalized = normalized[1:]
+    if amount < 10 or amount > 150000 or not re.fullmatch(r'254(?:7|1)\d{8}', normalized):
+        messages.error(request, 'Use an amount from KES 10 to 150,000 and a valid Kenyan mobile number.')
+        return redirect('wallet')
+    reference = f"dep_{uuid.uuid4()}"
+    deposit = Deposit.objects.create(
+        user=request.user,
+        amount=amount,
+        phone=normalized,
+        external_reference=reference,
+        provider='payhero',
+    )
+    try:
+        result = PayHeroClient().collect(
+            amount=amount,
+            phone=normalized,
+            external_reference=reference,
+            customer_name=request.user.get_full_name() or request.user.username,
+        )
+    except (RuntimeError, requests.RequestException) as exc:
+        deposit.status = 'FAILED'
+        deposit.save(update_fields=['status'])
+        messages.error(request, f'PayHero STK request failed: {exc}')
+        return redirect('wallet')
+    deposit.payhero_reference = result['providerReference']
+    deposit.checkout_request_id = result.get('checkoutRequestId') or ''
+    deposit.save(update_fields=['payhero_reference', 'checkout_request_id'])
+    messages.success(request, 'STK prompt requested. Check your phone; wallet credit waits for verified PayHero confirmation.')
+    audit(request.user, 'DEPOSIT_CREATED', deposit, new='QUEUED', request=request)
+    return redirect('wallet')
+
+
+@login_required
+@require_POST
+@transaction.atomic
+def wallet_mock_complete_page(request, deposit_id):
+    return api_error('MOCK_DEPOSITS_DISABLED', 'Wallet funds can only be added after a verified PayHero M-Pesa payment.', 410)
+
+
+@login_required
+@require_POST
+def schedule_bill_payment(request, bill_id):
+    bill = get_object_or_404(Bill, id=bill_id, user=request.user, active=True)
+    try:
+        scheduled_for = datetime.fromisoformat(request.POST.get('scheduled_for', ''))
+        if timezone.is_naive(scheduled_for):
+            scheduled_for = timezone.make_aware(scheduled_for, timezone.get_current_timezone())
+        amount = Decimal(request.POST.get('amount') or bill.amount)
+    except (TypeError, ValueError, InvalidOperation):
+        messages.error(request, 'Choose a valid date/time and amount.')
+        return redirect('dashboard')
+    if scheduled_for <= timezone.now():
+        messages.error(request, 'Choose a future remittance time.')
+        return redirect('dashboard')
+    if amount <= 0 or amount > 150000 or amount != amount.to_integral_value():
+        messages.error(request, 'Amount must be a whole KES value between KES 1 and KES 150,000.')
+        return redirect('dashboard')
+    score, level, reasons = assess_risk(request, bill, amount, bill.merchant_name, bill.merchant_phone)
+    authorized = bill.auto_pay_enabled and level == 'GREEN'
+    intent = PaymentIntent.objects.create(
+        user=request.user, bill=bill,
+        intent_id=f"AP-SCH-{timezone.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}",
+        amount=amount, recipient=bill.merchant_name, phone=bill.merchant_phone,
+        reference=bill.reference, reason=f"Scheduled remittance for {bill.name}",
+        risk_score=score, risk_level=level, risk_reasons=reasons,
+        authorization_status='AUTHORIZED' if authorized else 'CONFIRMATION_REQUIRED',
+        payment_status='SCHEDULED',
+        scheduled_for=scheduled_for,
+        expires_at=scheduled_for + timedelta(hours=1),
+    )
+    audit(request.user, 'REMITTANCE_SCHEDULED', intent, new='SCHEDULED', reason='; '.join(reasons), risk=score, request=request)
+    if authorized:
+        messages.success(request, f'Remittance scheduled for {timezone.localtime(scheduled_for):%d %b %Y, %H:%M}.')
+    else:
+        messages.info(request, 'Remittance is scheduled but requires your confirmation before execution.')
+    return redirect('dashboard')
 
 
 @login_required
@@ -139,6 +270,9 @@ def create_bill(request):
         except ValueError:
             messages.error(request, 'Enter a valid due date.')
             return redirect('create_bill')
+        if amount <= 0 or amount != amount.to_integral_value():
+            messages.error(request, 'Bill amounts must be whole KES values greater than zero.')
+            return redirect('create_bill')
         bill = Bill.objects.create(
             user=request.user,
             name=request.POST['name'].strip(),
@@ -150,6 +284,7 @@ def create_bill(request):
             amount=amount,
             due_date=due_date,
             frequency=request.POST.get('frequency', 'monthly'),
+            auto_pay_enabled=request.POST.get('auto_pay_enabled') == 'on',
             day_of_month=due_date.day,
             next_due_at=timezone.make_aware(
                 datetime.combine(due_date, time(8, 0)),
@@ -180,20 +315,19 @@ def create_bill(request):
                         'message': f'KES {bill.amount} is due on {bill.due_date}.',
                     },
                 )
-        PaymentIntent.objects.get_or_create(
+        PaymentIntent.objects.create(
             user=request.user,
             bill=bill,
-            intent_id=f"AP-SCH-{timezone.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}",
-            defaults={
-                'amount': bill.amount,
-                'recipient': bill.merchant_name,
-                'phone': bill.merchant_phone,
-                'reference': bill.reference,
-                'reason': f"Scheduled {bill.category.lower()} payment",
-                'authorization_status': 'AUTHORIZED' if bill.auto_pay_enabled else 'CREATED',
-                'payment_status': 'SCHEDULED',
-                'expires_at': due_at,
-            },
+            intent_id=f"AP-{timezone.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}",
+            amount=bill.amount,
+            recipient=bill.merchant_name,
+            phone=bill.merchant_phone,
+            reference=bill.reference,
+            reason=f"{bill.category.title()} payment for {bill.name}",
+            authorization_status='AUTHORIZED' if bill.auto_pay_enabled else 'CREATED',
+            payment_status='SCHEDULED',
+            scheduled_for=due_at,
+            expires_at=due_at + timedelta(hours=1),
         )
         audit(request.user, 'BILL_CREATED', bill, new='ACTIVE', request=request)
         messages.success(request, 'Bill created.')
@@ -248,6 +382,9 @@ def create_intent(request, bill_id):
     except InvalidOperation:
         messages.error(request, 'Enter a valid payment amount.')
         return redirect('dashboard')
+    if amount <= 0 or amount != amount.to_integral_value():
+        messages.error(request, 'Payment amount must be a whole KES value greater than zero.')
+        return redirect('dashboard')
     recipient = request.POST.get('recipient', '').strip() or bill.merchant_name
     phone = request.POST.get('phone', '').strip() or bill.merchant_phone
     score, level, reasons = assess_risk(request, bill, amount, recipient, phone)
@@ -290,11 +427,13 @@ def confirm_intent(request, intent_id):
         return redirect('dashboard')
     if timezone.now() >= intent.expires_at:
         intent.authorization_status = 'EXPIRED'
-        intent.save(update_fields=['authorization_status'])
+        intent.save(update_fields=['authorization_status', 'payment_status'])
         audit(request.user, 'PAYMENT_INTENT_EXPIRED', intent, previous='CONFIRMATION_REQUIRED', new='EXPIRED', request=request)
         messages.error(request, 'The payment authorization expired.')
         return redirect('dashboard')
     intent.authorization_status = 'AUTHORIZED'
+    if intent.payment_status == 'AWAITING_CONFIRMATION':
+        intent.payment_status = 'SCHEDULED'
     intent.save(update_fields=['authorization_status'])
     audit(request.user, 'PAYMENT_CONFIRMED', intent, previous='CONFIRMATION_REQUIRED', new='AUTHORIZED', request=request)
     messages.success(request, 'Payment confirmed.')
@@ -430,13 +569,24 @@ def mock_webhook(request):
     )
     external_reference = payload.get('ExternalReference') or payload.get('external_reference') or casefolded.get('externalreference')
     if external_reference and str(external_reference).startswith('dep_'):
+        if not settings.PAYHERO_LIVE_PAYMENTS or not webhook_secret:
+            return JsonResponse({'detail': 'Live PayHero deposits are not enabled for callbacks'}, status=503)
         deposit = Deposit.objects.select_for_update().filter(external_reference=external_reference).first()
         if not deposit:
             return JsonResponse({'received': True, 'ignored': 'unknown deposit'}, status=200)
+        if deposit.provider != 'payhero':
+            return JsonResponse({'detail': 'Deposit was not initiated through PayHero'}, status=409)
         if deposit.status in {'SUCCESS','FAILED','CANCELLED','TIMEOUT'}:
             return JsonResponse({'received': True, 'duplicate': True})
         raw_status = str(payload.get('status') or payload.get('Status') or payload.get('ResultCode') or '').upper()
         deposit_status = 'SUCCESS' if raw_status in {'SUCCESS','SUCCESSFUL','0'} else 'FAILED'
+        callback_amount = payload.get('amount') or payload.get('Amount')
+        if callback_amount is not None:
+            try:
+                if Decimal(str(callback_amount)) != Decimal(deposit.amount):
+                    return JsonResponse({'detail': 'Callback amount does not match the deposit'}, status=400)
+            except InvalidOperation:
+                return JsonResponse({'detail': 'Invalid callback amount'}, status=400)
         if settings.PAYHERO_LIVE_PAYMENTS and deposit_status == 'SUCCESS':
             verification = PayHeroClient().status(deposit.payhero_reference or external_reference)
             if verification['status'] != 'SUCCESS':
@@ -1398,15 +1548,13 @@ def me_api(request):
 
 
 def posted_balance(user):
-    rows = LedgerEntry.objects.filter(user=user, status='POSTED')
+    rows = LedgerEntry.objects.filter(
+        user=user,
+        status='POSTED',
+        type__in=['DEPOSIT', 'PAYMENT', 'REFUND', 'FEE'],
+    )
     posted = sum(row.amount for row in rows)
-    held = sum(row.amount for row in LedgerEntry.objects.filter(
-        user=user, type='HOLD', status='POSTED',
-    ))
-    releases = sum(row.amount for row in LedgerEntry.objects.filter(
-        user=user, type='RELEASE', status='POSTED',
-    ))
-    held = held - releases
+    held = sum(WalletHold.objects.filter(user=user, active=True).values_list('amount', flat=True))
     return {'posted': posted, 'held': max(held, 0), 'available': posted - max(held, 0)}
 
 
@@ -1414,6 +1562,9 @@ def posted_balance(user):
 @require_POST
 @transaction.atomic
 def wallet_deposit(request):
+    configuration_error = wallet_funding_configuration_error()
+    if configuration_error:
+        return api_error('PAYHERO_NOT_READY', f'Wallet top-up unavailable: {configuration_error}', 503)
     try:
         payload = json.loads(request.body or '{}')
     except json.JSONDecodeError:
@@ -1437,33 +1588,24 @@ def wallet_deposit(request):
     deposit = Deposit.objects.create(
         user=request.user, amount=amount, phone=normalized,
         external_reference=external_reference,
+        provider='payhero',
     )
-    provider_reference = ''
-    checkout_request_id = ''
-    if settings.PAYHERO_LIVE_PAYMENTS:
-        try:
-            result = PayHeroClient().collect(
-                amount=amount,
-                phone=normalized,
-                external_reference=external_reference,
-                customer_name=request.user.get_full_name() or request.user.username,
-            )
-            provider_reference = result['providerReference']
-            checkout_request_id = result.get('checkoutRequestId') or ''
-            deposit.payhero_reference = provider_reference
-            deposit.checkout_request_id = checkout_request_id
-            deposit.save(update_fields=['payhero_reference', 'checkout_request_id'])
-        except (RuntimeError, requests.RequestException) as exc:
-            deposit.status = 'FAILED'
-            deposit.save(update_fields=['status'])
-            audit(request.user, 'DEPOSIT_FAILED', deposit, new='FAILED', reason=str(exc), request=request)
-            return api_error('PROVIDER_ERROR', str(exc), 502)
-    else:
-        provider_reference = f"MOCK-{external_reference}"
-        checkout_request_id = f"CHK-{uuid.uuid4().hex[:8].upper()}"
+    try:
+        result = PayHeroClient().collect(
+            amount=amount,
+            phone=normalized,
+            external_reference=external_reference,
+            customer_name=request.user.get_full_name() or request.user.username,
+        )
+        provider_reference = result['providerReference']
         deposit.payhero_reference = provider_reference
-        deposit.checkout_request_id = checkout_request_id
+        deposit.checkout_request_id = result.get('checkoutRequestId') or ''
         deposit.save(update_fields=['payhero_reference', 'checkout_request_id'])
+    except (RuntimeError, requests.RequestException) as exc:
+        deposit.status = 'FAILED'
+        deposit.save(update_fields=['status'])
+        audit(request.user, 'DEPOSIT_FAILED', deposit, new='FAILED', reason=str(exc), request=request)
+        return api_error('PROVIDER_ERROR', str(exc), 502)
     audit(request.user, 'DEPOSIT_CREATED', deposit, new='QUEUED', request=request)
     return JsonResponse({
         'depositId': deposit.id,
@@ -1475,7 +1617,7 @@ def wallet_deposit(request):
 
 @login_required
 def deposit_status_api(request, deposit_id):
-    deposit = get_object_or_404(Deposit, id=deposit_id, user=request.user)
+    deposit = get_object_or_404(Deposit.objects.select_for_update(), id=deposit_id, user=request.user)
     return JsonResponse({
         'id': deposit.id,
         'amount': deposit.amount,
@@ -1489,7 +1631,11 @@ def deposit_status_api(request, deposit_id):
 def wallet_api(request):
     if request.method == 'POST':
         return wallet_deposit(request)
-    return JsonResponse(posted_balance(request.user))
+    return JsonResponse({
+        **posted_balance(request.user),
+        'walletReference': request.user.wallet_account.reference,
+        'currency': request.user.wallet_account.currency,
+    })
 
 
 deposit_api = wallet_deposit
@@ -1499,23 +1645,4 @@ deposit_api = wallet_deposit
 @require_POST
 @transaction.atomic
 def deposit_complete_api(request, deposit_id):
-    deposit = get_object_or_404(Deposit, id=deposit_id, user=request.user)
-    if deposit.status in {'SUCCESS', 'FAILED', 'CANCELLED', 'TIMEOUT'}:
-        return JsonResponse({'status': deposit.status, 'idempotent': True})
-    deposit.status = 'SUCCESS'
-    deposit.mpesa_receipt = request.POST.get('receipt') or f"MOCK-{uuid.uuid4().hex[:8].upper()}"
-    deposit.save(update_fields=['status', 'mpesa_receipt', 'updated_at'])
-    LedgerEntry.objects.create(
-        user=request.user, type='DEPOSIT', amount=deposit.amount,
-        ref_type='Deposit', ref_id=str(deposit.id), status='POSTED',
-    )
-    audit(request.user, 'DEPOSIT_SUCCESS', deposit, new='SUCCESS', request=request)
-    Notification.objects.create(
-        user=request.user,
-        title='Wallet topped up',
-        body=f"KSh {deposit.amount} was received.",
-        channel='IN_APP',
-        status='SENT',
-        actions=[{'label': 'View wallet', 'url': '/wallet'}],
-    )
-    return JsonResponse({'status': 'SUCCESS', 'balance': posted_balance(request.user)})
+    return api_error('MOCK_DEPOSITS_DISABLED', 'Wallet funds can only be added after a verified PayHero M-Pesa payment.', 410)

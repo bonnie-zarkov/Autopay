@@ -1,0 +1,62 @@
+{% extends "core/base.html" %}
+{% block content %}
+<div class="page-header">
+  <div><span class="eyebrow">Wallet · KES</span><h1>Your AutoPay wallet</h1></div>
+  <a class="button ghost" href="{% url 'dashboard' %}">← Dashboard</a>
+</div>
+<section class="wallet-balance">
+  <div><span>Available to schedule</span><strong>KES {{ wallet.available }}</strong></div>
+  <div><span>Held for remittances</span><strong>KES {{ wallet.held }}</strong></div>
+  <div><span>Posted ledger balance</span><strong>KES {{ wallet.posted }}</strong></div>
+</section>
+<section class="wallet-reference-card">
+  <div><span class="eyebrow">YOUR WALLET REFERENCE</span><strong>{{ wallet_account.reference }}</strong><small>{{ wallet_account.currency }} wallet · {{ wallet_account.status|title }}</small></div>
+  <p>Wallet funds come from real M-Pesa payments. A deposit is credited only after PayHero confirms the STK payment.</p>
+</section>
+<section class="section-block wallet-columns">
+  <article class="form-card">
+    <span class="eyebrow">Real M-Pesa top-up</span>
+    <h2>Deposit with M-Pesa</h2>
+    {% if funding_ready %}
+    <p>PayHero will send an M-Pesa STK prompt to your phone. Approve it in M-Pesa; wallet funds are added only after verified payment confirmation.</p>
+    <form method="post" action="{% url 'wallet_deposit_page' %}">
+      {% csrf_token %}
+      <label>Amount (KES)<input name="amount" type="number" min="10" max="150000" step="1" required placeholder="5000"></label>
+      <label>M-Pesa phone<input name="phone" inputmode="tel" placeholder="254712345678" value="{{ user.profile.phone }}" required></label>
+      <div class="form-actions"><button class="button primary" type="submit">Pay with M-Pesa STK</button></div>
+    </form>
+    {% else %}
+    <p class="warning">Real wallet top-ups are unavailable until PayHero is configured. {{ funding_error }}</p>
+    {% endif %}
+  </article>
+  <article class="form-card">
+    <span class="eyebrow">PayHero deposits</span>
+    <h2>Deposit activity</h2>
+    {% for deposit in deposits %}
+      <div class="wallet-row">
+        <div><strong>KES {{ deposit.amount }}</strong><small>{{ deposit.external_reference }} · {{ deposit.created_at|date:"d M, H:i" }}</small></div>
+        <span class="status">{{ deposit.status }}</span>
+      </div>
+    {% empty %}
+      <div class="empty compact"><p>No deposits yet.</p></div>
+    {% endfor %}
+  </article>
+</section>
+<section class="section-block">
+  <div class="section-heading"><div><span class="eyebrow">Double-entry style activity</span><h2>Wallet ledger</h2></div></div>
+  <div class="activity-table">
+    <div class="table-head ledger-head"><span>Type</span><span>Reference</span><span>Amount</span><span>Date</span></div>
+    {% for entry in transactions %}
+    <div class="table-row ledger-row">
+      <div><strong>{{ entry.type }}</strong><small>{{ entry.status }}</small></div>
+      <div>{{ entry.ref_type }} · {{ entry.ref_id }}</div>
+      <div>{% if entry.amount > 0 %}+{% endif %}KES {{ entry.amount }}</div>
+      <div>{{ entry.created_at|date:"d M Y, H:i" }}</div>
+    </div>
+    {% empty %}
+    <div class="empty compact"><p>No wallet transactions yet.</p></div>
+    {% endfor %}
+  </div>
+</section>
+<p class="disclaimer">AutoPay wallet balances shown here are ledger values. Demo remittances do not transfer funds to a merchant.</p>
+{% endblock %}

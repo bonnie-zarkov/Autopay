@@ -6,15 +6,17 @@
   <title>AutoPay</title>
   {% load static %}
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  <link rel="stylesheet" href="{% static 'css/wallet.css' %}">
 </head>
 <body>
   {% if user.is_authenticated %}
   <aside class="sidebar">
     <a class="brand" href="{% url 'dashboard' %}"><span class="brand-mark">A</span><span>AutoPay</span></a>
     <nav>
-      <a class="active" href="{% url 'dashboard' %}"><span>⌂</span> Overview</a>
-      <a href="{% url 'create_bill' %}"><span>＋</span> Add a bill</a>
-      <a href="{% url 'reminders' %}"><span>◷</span> Reminders</a>
+      <a class="{% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span>⌂</span> Overview</a>
+      <a class="{% if request.resolver_match.url_name == 'create_bill' %}active{% endif %}" href="{% url 'create_bill' %}"><span>＋</span> Add a bill</a>
+      <a class="{% if request.resolver_match.url_name == 'wallet' %}active{% endif %}" href="{% url 'wallet' %}"><span>◉</span> Wallet</a>
+      <a class="{% if request.resolver_match.url_name == 'reminders' %}active{% endif %}" href="{% url 'reminders' %}"><span>◷</span> Reminders</a>
     </nav>
     <div class="sidebar-user">
       <span class="avatar">{{ user.username|first|upper }}</span>

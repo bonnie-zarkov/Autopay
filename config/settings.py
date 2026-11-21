@@ -109,7 +109,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Africa/Nairobi'
 
 USE_I18N = True
 
@@ -156,6 +156,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     'reconcile-stuck-deposits': {
         'task': 'core.tasks.reconcile_stuck_deposits',
+        'schedule': 60.0,
+    },
+    'process-due-remittances': {
+        'task': 'core.tasks.process_due_scheduled_remittances',
         'schedule': 60.0,
     },
 }

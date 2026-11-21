@@ -29,3 +29,13 @@ Use Basic authentication from `PAYHERO_BASIC_AUTH_TOKEN`, or build it from
 
 Live initiation is disabled by default. Enabling `PAYHERO_LIVE_PAYMENTS=True`
 may initiate real-money payments and must only be used for controlled testing.
+
+Wallet top-ups are live-only: the app does not create simulated credits. Enable
+live payments only after setting a public HTTPS `PAYHERO_CALLBACK_URL`, valid
+PayHero credentials and channel ID, and a non-empty `PAYHERO_CALLBACK_SECRET`
+(or `PAYHERO_WEBHOOK_SECRET`). Configure the callback to reach
+`/api/webhooks/payhero/`. The callback must include the same secret in the
+`X-PayHero-Secret` header or an `s` query parameter; if PayHero cannot set a
+header, include `?s=<PAYHERO_CALLBACK_SECRET>` in the callback URL. A wallet
+deposit remains uncredited until the authenticated callback is confirmed
+against PayHero's transaction status.

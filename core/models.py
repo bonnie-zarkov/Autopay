@@ -1,8 +1,25 @@
 from decimal import Decimal
+import secrets
 
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
+
+
+def create_wallet_reference():
+    return f"APW-{secrets.token_hex(5).upper()}"
+
+
+class Wallet(models.Model):
+    STATUS_CHOICES = [('ACTIVE', 'Active'), ('FROZEN', 'Frozen'), ('CLOSED', 'Closed')]
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='wallet_account')
+    reference = models.CharField(max_length=20, unique=True, default=create_wallet_reference)
+    currency = models.CharField(max_length=3, default='KES')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='ACTIVE')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'{self.reference} ({self.user.get_username()})'
 
 
 class UserProfile(models.Model):
@@ -38,7 +55,7 @@ class Bill(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     due_date = models.DateField()
     frequency = models.CharField(max_length=20, default='monthly')
-    auto_pay_enabled = models.BooleanField(default=True)
+    auto_pay_enabled = models.BooleanField(default=False)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     day_of_month = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -90,6 +107,7 @@ class PaymentIntent(models.Model):
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     executed_at = models.DateTimeField(null=True, blank=True)
+    scheduled_for = models.DateTimeField(null=True, blank=True, db_index=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -247,6 +265,7 @@ class Deposit(models.Model):
     payhero_reference = models.CharField(max_length=100, blank=True)
     checkout_request_id = models.CharField(max_length=100, blank=True)
     status = models.CharField(max_length=20, choices=STATUSES, default='QUEUED')
+    provider = models.CharField(max_length=20, default='mock')
     mpesa_receipt = models.CharField(max_length=100, blank=True)
     raw_callback = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

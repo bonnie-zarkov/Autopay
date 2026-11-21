@@ -1,97 +1,198 @@
 {% extends "core/base.html" %}
 {% block content %}
-<div class="page-header dashboard-header">
-  <div><span class="eyebrow">Dashboard · {{ today }}</span><h1>Good day, {{ user.username }}</h1></div>
-  <div class="header-actions">
-    <form method="post" action="{% url 'toggle_freeze' %}">{% csrf_token %}
-      <button class="button {% if profile.payments_frozen %}danger{% else %}shield{% endif %}" type="submit">
-        {% if profile.payments_frozen %}◉ Payments frozen{% else %}◆ Payment Shield{% endif %}
-      </button>
-    </form>
-  </div>
-</div>
-
-<section class="stats">
-  <article><span>Upcoming bills</span><strong>{{ bills|length }}</strong><small>Active payments</small></article>
-  <article><span>Payment intents</span><strong>{{ intents|length }}</strong><small>Tracked in AutoPay</small></article>
-  <article><span>Auto-pay limit</span><strong>KES {{ profile.auto_pay_limit|floatformat:0 }}</strong><small>Configured threshold</small></article>
-  <article class="{% if profile.payments_frozen %}stat-danger{% endif %}"><span>Shield status</span><strong>{% if profile.payments_frozen %}FROZEN{% else %}ACTIVE{% endif %}</strong><small>Deterministic protection</small></article>
-</section>
-
-<section class="reminder-strip">
-  <div><span class="eyebrow">Monthly obligations</span><strong>KES {{ monthly_bills|floatformat:2 }}</strong></div>
-  <div><span class="eyebrow">Upcoming reminders</span><strong>{{ reminders|length }}</strong></div>
-  <a class="button ghost" href="{% url 'reminders' %}">View reminders</a>
-</section>
-
-<section class="section-block">
-  <div class="section-heading"><div><span class="eyebrow">Your schedule</span><h2>Upcoming bills</h2></div><a class="button ghost" href="{% url 'create_bill' %}">＋ Add bill</a></div>
-  {% if bills %}
-  <div class="bill-grid">
-    {% for bill in bills %}
-    <article class="bill-card">
-      <div class="bill-top"><span class="category">{{ bill.category }}</span><span class="due">Due {{ bill.due_date }}</span></div>
-      <h3>{{ bill.name }}</h3>
-      <p>{{ bill.merchant_name }} · {{ bill.reference }}</p>
-      <div class="bill-footer"><strong>KES {{ bill.amount|floatformat:2 }}</strong>
-        <form method="post" action="{% url 'create_intent' bill.id %}">{% csrf_token %}
-          <input type="hidden" name="amount" value="{{ bill.amount }}">
-          <button class="button small" type="submit">Create payment</button>
-        </form>
-      </div>
-      <details class="demo-controls"><summary>Demo controls</summary>
-        <form method="post" action="{% url 'create_intent' bill.id %}">{% csrf_token %}
-          <label>Modified amount<input name="amount" type="number" step="0.01" value="{{ bill.amount }}"></label>
-          <label>Recipient phone<input name="phone" value="{{ bill.merchant_phone }}"></label>
-          <label>Recipient name<input name="recipient" value="{{ bill.merchant_name }}"></label>
-          <button class="button ghost small" type="submit">Assess payment</button>
-        </form>
-      </details>
-    </article>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="empty"><span>＋</span><h3>No bills yet</h3><p>Add your first bill to start the verified payment flow.</p><a class="button primary" href="{% url 'create_bill' %}">Add a bill</a></div>
-  {% endif %}
-</section>
-
-<section class="section-block">
-  <div class="section-heading"><div><span class="eyebrow">Security trail</span><h2>Payment activity</h2></div></div>
-  {% if intents %}
-  <div class="activity-table">
-    <div class="table-head"><span>Payment</span><span>Recipient</span><span>Risk</span><span>Status</span><span>Action</span></div>
-    {% for intent in intents %}
-    <div class="table-row">
-      <div><strong>{{ intent.intent_id }}</strong><small>{{ intent.bill.name }} · KES {{ intent.amount|floatformat:2 }}</small></div>
-      <div><strong>{{ intent.recipient }}</strong><small>{{ intent.phone }}</small></div>
-      <div><span class="risk {{ intent.risk_level|lower }}">{{ intent.risk_level }} · {{ intent.risk_score }}</span></div>
-      <div><span class="status">{{ intent.authorization_status }}</span><small>{{ intent.payment_status }}</small></div>
-      <div>
-        {% if intent.authorization_status == 'CONFIRMATION_REQUIRED' %}
-        <form method="post" action="{% url 'confirm_intent' intent.id %}">{% csrf_token %}<button class="button small" type="submit">Confirm</button></form>
-        {% elif intent.authorization_status == 'AUTHORIZED' and intent.payment_status == 'CREATED' %}
-        <form method="post" action="{% url 'simulate_payment' intent.id %}">{% csrf_token %}<button class="button small primary" type="submit">Pay</button></form>
-        {% elif intent.payment_status == 'PENDING' %}
-        {% with attempt=intent.attempts.first %}
-        {% if attempt %}
-        <small>Ref: {{ attempt.provider_reference }}</small>
-        <form method="post" action="{% url 'payhero_webhook' %}" class="callback-actions">
-          {% csrf_token %}
-          <input type="hidden" name="provider_reference" value="{{ attempt.provider_reference }}">
-          <input type="hidden" name="intent_id" value="{{ intent.intent_id }}">
-          <button class="button small" name="status" value="SUCCESS" type="submit">Success</button>
-          <button class="button ghost small" name="status" value="FAILED" type="submit">Fail</button>
-        </form>
-        {% else %}<span class="muted">Awaiting callback</span>{% endif %}
-        {% endwith %}
-        {% elif intent.payment_status == 'SUCCESS' %}<span class="success-text">Receipt ready</span>
-        {% else %}<span class="muted">—</span>{% endif %}
-      </div>
+<div class="dashboard-page">
+  <header class="dashboard-topbar">
+    <div>
+      <span class="eyebrow">PERSONAL FINANCE</span>
+      <h1>Good day, {{ user.username }}</h1>
+      <p class="topbar-subtitle">A clear view of what’s due and what’s next.</p>
     </div>
-    {% endfor %}
+    <div class="topbar-actions">
+      <span class="date-chip">{{ today|date:"D, d M Y" }}</span>
+      <form method="post" action="{% url 'toggle_freeze' %}">
+        {% csrf_token %}
+        <button class="button {% if profile.payments_frozen %}danger{% else %}shield{% endif %}" type="submit">
+          {% if profile.payments_frozen %}Payments frozen{% else %}Shield active{% endif %}
+        </button>
+      </form>
+    </div>
+  </header>
+
+  <section class="wallet-hero">
+    <div class="wallet-hero-content">
+      <span class="hero-label"><span class="live-dot"></span> AUTOPAY WALLET</span>
+      <p class="hero-caption">Available balance</p>
+      <h2><span>KES</span> {{ wallet.available }}</h2>
+      <div class="hero-meta">
+        <span>{{ wallet.held }} held for payments</span>
+        <span class="hero-divider"></span>
+        <span>Ledger-backed balance</span>
+      </div>
+      <a class="hero-action" href="{% url 'wallet' %}">＋ Add funds <span>↗</span></a>
+      <a class="hero-secondary-action" href="{% url 'wallet' %}">View wallet activity</a>
+    </div>
+    <div class="hero-art" aria-hidden="true">
+      <div class="orbit orbit-one"></div>
+      <div class="orbit orbit-two"></div>
+      <div class="hero-orb">A</div>
+      <span class="art-spark spark-one">✦</span>
+      <span class="art-spark spark-two">✦</span>
+    </div>
+    <div class="hero-bottom-line"></div>
+  </section>
+
+  <section class="dashboard-metrics" aria-label="Account overview">
+    <article class="metric-card">
+      <div class="metric-icon metric-lime">↗</div>
+      <div class="metric-copy"><span>Monthly obligations</span><strong>KES {{ monthly_bills|floatformat:0 }}</strong><small>Across active bills</small></div>
+    </article>
+    <article class="metric-card">
+      <div class="metric-icon metric-blue">▤</div>
+      <div class="metric-copy"><span>Active bills</span><strong>{{ bills|length }}</strong><small>On your schedule</small></div>
+    </article>
+    <article class="metric-card">
+      <div class="metric-icon metric-violet">◷</div>
+      <div class="metric-copy"><span>Upcoming reminders</span><strong>{{ reminders|length }}</strong><small>Ready to keep you on time</small></div>
+    </article>
+    <article class="metric-card">
+      <div class="metric-copy"><span>Payment Shield</span><strong>{% if profile.payments_frozen %}Frozen{% else %}Active{% endif %}</strong><small>Auto-pay limit KES {{ profile.auto_pay_limit|floatformat:0 }}</small></div>
+    </article>
+  </section>
+
+  <div class="dashboard-content-grid">
+    <section class="panel bills-panel">
+      <div class="panel-heading">
+        <div><span class="eyebrow">YOUR SCHEDULE</span><h2>Upcoming bills</h2></div>
+        <a class="button add-bill-button" href="{% url 'create_bill' %}"><span>＋</span> Add a bill</a>
+      </div>
+      {% if bills %}
+      <div class="bill-list">
+        {% for bill in bills %}
+        <article class="bill-list-item">
+          <div class="bill-avatar">{{ bill.name|first|upper }}</div>
+          <div class="bill-info">
+            <div class="bill-title-line"><h3>{{ bill.name }}</h3><span class="category-pill">{{ bill.category }}</span></div>
+            <p>{{ bill.merchant_name }} <span>·</span> Due {{ bill.due_date|date:"d M Y" }}</p>
+          </div>
+          <div class="bill-amount"><strong>KES {{ bill.amount|floatformat:0 }}</strong><small>{{ bill.frequency|title }}</small></div>
+          <div class="bill-actions">
+            <form method="post" action="{% url 'create_intent' bill.id %}">
+              {% csrf_token %}<input type="hidden" name="amount" value="{{ bill.amount }}">
+              <button class="button pay-button" type="submit">Pay now</button>
+            </form>
+            <details class="bill-more">
+              <summary aria-label="More bill actions">•••</summary>
+              <div class="bill-popover">
+                <details>
+                  <summary>Schedule remittance</summary>
+                  <form method="post" action="{% url 'schedule_bill_payment' bill.id %}">
+                    {% csrf_token %}
+                    <label>Date &amp; time<input name="scheduled_for" type="datetime-local" required></label>
+                    <label>Amount (KES)<input name="amount" type="number" step="1" min="1" value="{{ bill.amount }}" required></label>
+                    <button class="button primary small" type="submit">Schedule payment</button>
+                  </form>
+                </details>
+                <details>
+                  <summary>Payment Shield test</summary>
+                  <form method="post" action="{% url 'create_intent' bill.id %}">
+                    {% csrf_token %}
+                    <label>Amount<input name="amount" type="number" step="1" value="{{ bill.amount }}"></label>
+                    <label>Recipient<input name="recipient" value="{{ bill.merchant_name }}"></label>
+                    <label>Phone<input name="phone" value="{{ bill.merchant_phone }}"></label>
+                    <button class="button ghost small" type="submit">Assess payment</button>
+                  </form>
+                </details>
+              </div>
+            </details>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="dashboard-empty">
+        <div class="empty-illustration">＋</div>
+        <h3>Your schedule starts here</h3>
+        <p>Add a bill and AutoPay will help you keep track of the due date.</p>
+        <a class="button primary" href="{% url 'create_bill' %}">Add your first bill</a>
+      </div>
+      {% endif %}
+      <a class="panel-footer-link" href="{% url 'create_bill' %}">Manage your bills <span>→</span></a>
+    </section>
+
+    <aside class="right-rail">
+      <section class="shield-card {% if profile.payments_frozen %}shield-card-frozen{% endif %}">
+        <div class="shield-card-top">
+          <span class="shield-state">{% if profile.payments_frozen %}FROZEN{% else %}PROTECTION ON{% endif %}</span>
+        </div>
+        <h2>{% if profile.payments_frozen %}Payments are paused{% else %}Your payments are protected{% endif %}</h2>
+        <p>{% if profile.payments_frozen %}Scheduled payments will not be processed while freeze mode is active.{% else %}Every payment is checked against your bill, payee, and risk settings.{% endif %}</p>
+        <form method="post" action="{% url 'toggle_freeze' %}">
+          {% csrf_token %}
+          <button type="submit" class="shield-card-action">{% if profile.payments_frozen %}Unfreeze payments{% else %}Freeze payments{% endif %}<span>→</span></button>
+        </form>
+      </section>
+
+      <section class="panel reminder-panel">
+        <div class="panel-heading compact-heading">
+          <div><span class="eyebrow">DON’T MISS A DATE</span><h2>Reminders</h2></div>
+          <a class="icon-link" href="{% url 'reminders' %}" aria-label="View all reminders">↗</a>
+        </div>
+        {% for reminder in reminders %}
+        <div class="reminder-item">
+          <span class="reminder-marker"></span>
+          <div><strong>{{ reminder.title }}</strong><p>{{ reminder.due_at|date:"d M · H:i" }}</p></div>
+          <span class="reminder-arrow">›</span>
+        </div>
+        {% empty %}
+        <div class="reminder-empty"><span>◷</span><p>Your upcoming reminders will show here.</p></div>
+        {% endfor %}
+        <a class="panel-footer-link" href="{% url 'reminders' %}">See all reminders <span>→</span></a>
+      </section>
+    </aside>
   </div>
-  {% else %}
-  <div class="empty compact"><p>No payment activity yet.</p></div>
-  {% endif %}
-</section>
+
+  <section class="panel activity-panel">
+    <div class="panel-heading">
+      <div><span class="eyebrow">RECENT ACTIVITY</span><h2>Payment activity</h2></div>
+      <a class="text-link" href="{% url 'wallet' %}">Wallet &amp; ledger <span>→</span></a>
+    </div>
+    {% if intents %}
+    <div class="activity-table modern-activity">
+      <div class="table-head"><span>Payment</span><span>Recipient</span><span>Risk check</span><span>Status</span><span></span></div>
+      {% for intent in intents %}
+      <div class="table-row">
+        <div><strong>{{ intent.bill.name }}</strong><small>{{ intent.intent_id }}{% if intent.scheduled_for %} · {{ intent.scheduled_for|date:"d M, H:i" }}{% endif %}</small></div>
+        <div><strong>{{ intent.recipient }}</strong><small>{{ intent.phone }}</small></div>
+        <div><span class="risk {{ intent.risk_level|lower }}">{{ intent.risk_level }} · {{ intent.risk_score }}</span></div>
+        <div><span class="status">{{ intent.payment_status|title }}</span><small>{{ intent.authorization_status|title }}</small></div>
+        <div class="activity-action">
+          {% if intent.authorization_status == 'CONFIRMATION_REQUIRED' %}
+          <form method="post" action="{% url 'confirm_intent' intent.id %}">{% csrf_token %}<button class="button small" type="submit">Confirm</button></form>
+          {% elif intent.authorization_status == 'AUTHORIZED' and intent.payment_status == 'CREATED' %}
+          <form method="post" action="{% url 'simulate_payment' intent.id %}">{% csrf_token %}<button class="button small primary" type="submit">Pay</button></form>
+          {% elif intent.payment_status == 'PENDING' %}
+          {% with attempt=intent.attempts.first %}
+          {% if attempt %}
+          <details class="demo-callback"><summary>Demo result</summary>
+            <form method="post" action="{% url 'payhero_webhook' %}">
+              {% csrf_token %}
+              <input type="hidden" name="provider_reference" value="{{ attempt.provider_reference }}">
+              <input type="hidden" name="intent_id" value="{{ intent.intent_id }}">
+              <button class="button small" name="status" value="SUCCESS" type="submit">Success</button>
+              <button class="button ghost small" name="status" value="FAILED" type="submit">Fail</button>
+            </form>
+          </details>
+          {% endif %}
+          {% endwith %}
+          {% elif intent.payment_status == 'SUCCESS' %}<span class="success-text">Receipt ready</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="activity-empty">Payment updates will appear here when you create a payment.</div>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}
