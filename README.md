@@ -41,7 +41,8 @@ Vercel's `VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, and `VERCEL_BRANCH_URL`
 are included automatically when present. For other hosts, set `ALLOWED_HOSTS`
 in the deployment environment; do not use `*` in production. Django debug mode
 defaults to off; keep `DJANGO_DEBUG=False` in production to avoid exposing
-tracebacks and request details.
+tracebacks and request details. WhiteNoise serves the bundled dashboard styles
+at the absolute `/static/` path, including on serverless deployments.
 
 ## PayHero and reminders
 

@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.test import SimpleTestCase, TestCase
+from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
 from django.test import override_settings
 from unittest.mock import patch
@@ -37,6 +37,18 @@ class DeploymentHostTests(SimpleTestCase):
             'autopay-preview.vercel.app',
             'feature-autopay.vercel.app',
         ])
+
+
+class StaticAssetTests(SimpleTestCase):
+    @override_settings(DEBUG=False, ALLOWED_HOSTS=['testserver'], WHITENOISE_USE_FINDERS=True)
+    def test_dashboard_css_uses_absolute_url_and_is_served(self):
+        client = Client()
+        page = client.get(reverse('login'))
+        self.assertContains(page, 'href="/static/css/app.css"')
+
+        stylesheet = client.get('/static/css/app.css')
+        self.assertEqual(stylesheet.status_code, 200)
+        self.assertTrue(stylesheet['Content-Type'].startswith('text/css'))
 
 
 class AutoPayFlowTests(TestCase):
