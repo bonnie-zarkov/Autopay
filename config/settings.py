@@ -36,6 +36,7 @@ def _allowed_hosts_from_environment(environ):
         'localhost',
         'autopay-2nkb.vercel.app',
         'autopay-2nkb-eu9c9fwah-autopay1.vercel.app',
+        'autopay.eucossahacks.xyz',
     ]
     for key in (
         'ALLOWED_HOSTS',

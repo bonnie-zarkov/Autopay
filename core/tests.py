@@ -31,6 +31,7 @@ class DeploymentHostTests(SimpleTestCase):
             'localhost',
             'autopay-2nkb.vercel.app',
             'autopay-2nkb-eu9c9fwah-autopay1.vercel.app',
+            'autopay.eucossahacks.xyz',
             'autopay.example.com',
             'api.autopay.example.com',
             'autopay-preview.vercel.app',
