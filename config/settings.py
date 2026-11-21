@@ -27,9 +27,31 @@ load_dotenv(BASE_DIR / '.env')
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-change-this-before-deployment')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() == 'true'
+DEBUG = os.getenv('DJANGO_DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
+
+def _allowed_hosts_from_environment(environ):
+    hosts = [
+        '127.0.0.1',
+        'localhost',
+        'autopay-2nkb.vercel.app',
+        'autopay-2nkb-eu9c9fwah-autopay1.vercel.app',
+    ]
+    for key in (
+        'ALLOWED_HOSTS',
+        'VERCEL_URL',
+        'VERCEL_PROJECT_PRODUCTION_URL',
+        'VERCEL_BRANCH_URL',
+    ):
+        hosts.extend(
+            host.strip()
+            for host in environ.get(key, '').split(',')
+            if host.strip()
+        )
+    return list(dict.fromkeys(hosts))
+
+
+ALLOWED_HOSTS = _allowed_hosts_from_environment(os.environ)
 
 
 # Application definition

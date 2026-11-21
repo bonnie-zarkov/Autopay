@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.test import override_settings
 from unittest.mock import patch
@@ -11,10 +11,31 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from django.utils import timezone
 
+from config.settings import _allowed_hosts_from_environment
 from .payhero import PayHeroClient
 
 from .models import Bill, Deposit, LedgerEntry, PaymentAttempt, PaymentIntent, Reminder, TrustedPayee
 from .tasks import process_due_scheduled_remittances
+
+
+class DeploymentHostTests(SimpleTestCase):
+    def test_allowed_hosts_include_configured_and_vercel_domains(self):
+        hosts = _allowed_hosts_from_environment({
+            'ALLOWED_HOSTS': 'autopay.example.com, api.autopay.example.com ',
+            'VERCEL_URL': 'autopay-preview.vercel.app',
+            'VERCEL_PROJECT_PRODUCTION_URL': 'autopay.example.com',
+            'VERCEL_BRANCH_URL': 'feature-autopay.vercel.app',
+        })
+        self.assertEqual(hosts, [
+            '127.0.0.1',
+            'localhost',
+            'autopay-2nkb.vercel.app',
+            'autopay-2nkb-eu9c9fwah-autopay1.vercel.app',
+            'autopay.example.com',
+            'api.autopay.example.com',
+            'autopay-preview.vercel.app',
+            'feature-autopay.vercel.app',
+        ])
 
 
 class AutoPayFlowTests(TestCase):
